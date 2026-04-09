@@ -1,11 +1,13 @@
-import { useState } from "react";
-import { CheckCircle2, ChevronDown, ChevronRight, Filter } from "lucide-react";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { CheckCircle2, ChevronDown, ChevronRight, Plus, Trash2, X } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { supabase } from "@/integrations/supabase/client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Input } from "@/components/ui/input";
+import { toast } from "sonner";
 
 type CheckItem = {
   id: string;
@@ -18,9 +20,22 @@ type CheckItem = {
 
 type FilterType = "전체" | "완료" | "미완료";
 
+const CATEGORIES = ["월간 점검", "분기 점검"];
+
+function useDebouncedCallback<T extends (...args: any[]) => void>(callback: T, delay: number) {
+  const timeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  return useCallback((...args: Parameters<T>) => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => callback(...args), delay);
+  }, [callback, delay]) as T;
+}
+
 const Index = () => {
   const [filter, setFilter] = useState<FilterType>("전체");
   const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({});
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+  const [newCategory, setNewCategory] = useState(CATEGORIES[0]);
   const queryClient = useQueryClient();
 
   const { data: items = [], isLoading } = useQuery({
@@ -51,6 +66,39 @@ const Index = () => {
     },
     onError: (_err, _vars, context) => {
       if (context?.previous) queryClient.setQueryData(["checklist_items"], context.previous);
+      toast.error("저장 실패");
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["checklist_items"] }),
+  });
+
+  const addMutation = useMutation({
+    mutationFn: async ({ title, category }: { title: string; category: string }) => {
+      const { error } = await supabase.from("checklist_items").insert({ title, category });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["checklist_items"] });
+      setNewTitle("");
+      setShowAddForm(false);
+      toast.success("항목이 추가되었습니다");
+    },
+    onError: () => toast.error("추가 실패"),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("checklist_items").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: ["checklist_items"] });
+      const previous = queryClient.getQueryData<CheckItem[]>(["checklist_items"]);
+      queryClient.setQueryData<CheckItem[]>(["checklist_items"], (old) => old?.filter((item) => item.id !== id));
+      return { previous };
+    },
+    onError: (_err, _id, context) => {
+      if (context?.previous) queryClient.setQueryData(["checklist_items"], context.previous);
+      toast.error("삭제 실패");
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["checklist_items"] }),
   });
@@ -59,8 +107,21 @@ const Index = () => {
     updateMutation.mutate({ id, updates: { checked: !currentChecked } });
   };
 
-  const updateMemo = (id: string, memo: string) => {
+  const debouncedUpdateMemo = useDebouncedCallback((id: string, memo: string) => {
     updateMutation.mutate({ id, updates: { memo } });
+  }, 800);
+
+  const handleMemoChange = (id: string, memo: string) => {
+    // Optimistic local update
+    queryClient.setQueryData<CheckItem[]>(["checklist_items"], (old) =>
+      old?.map((item) => (item.id === id ? { ...item, memo } : item))
+    );
+    debouncedUpdateMemo(id, memo);
+  };
+
+  const handleAdd = () => {
+    if (!newTitle.trim()) return;
+    addMutation.mutate({ title: newTitle.trim(), category: newCategory });
   };
 
   const completedCount = items.filter((i) => i.checked).length;
@@ -99,9 +160,18 @@ const Index = () => {
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-10 border-b border-border bg-background/80 backdrop-blur-md">
         <div className="mx-auto max-w-2xl px-4 py-5">
-          <h1 className="text-xl font-bold text-foreground tracking-tight">
-            <span className="text-primary">OK금융</span> 업무 점검
-          </h1>
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl font-bold text-foreground tracking-tight">
+              <span className="text-primary">OK금융</span> 업무 점검
+            </h1>
+            <button
+              onClick={() => setShowAddForm(!showAddForm)}
+              className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
+            >
+              {showAddForm ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
+              {showAddForm ? "취소" : "항목 추가"}
+            </button>
+          </div>
           <div className="mt-4 flex items-center gap-3">
             <Progress value={progressPercent} className="h-2 flex-1 bg-muted [&>div]:bg-primary" />
             <span className="text-sm font-semibold text-muted-foreground whitespace-nowrap">
@@ -125,6 +195,39 @@ const Index = () => {
           </div>
         </div>
       </header>
+
+      {/* Add Form */}
+      {showAddForm && (
+        <div className="mx-auto max-w-2xl px-4 pt-4">
+          <div className="rounded-xl border border-primary/30 bg-card p-4 space-y-3">
+            <Input
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              placeholder="점검 항목명 입력..."
+              className="bg-muted/50 border-border text-sm"
+              onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+            />
+            <div className="flex items-center gap-2">
+              <select
+                value={newCategory}
+                onChange={(e) => setNewCategory(e.target.value)}
+                className="flex-1 rounded-lg bg-muted/50 border border-border px-3 py-2 text-sm text-foreground"
+              >
+                {CATEGORIES.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+              <button
+                onClick={handleAdd}
+                disabled={!newTitle.trim() || addMutation.isPending}
+                className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+              >
+                저장
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <main className="mx-auto max-w-2xl px-4 py-6 space-y-6 pb-20">
         {categories.map((cat) => {
@@ -156,7 +259,7 @@ const Index = () => {
                   {catFiltered.map((item) => (
                     <div
                       key={item.id}
-                      className={`rounded-xl border p-4 transition-all ${
+                      className={`group/card rounded-xl border p-4 transition-all ${
                         item.checked
                           ? "bg-primary/5 border-primary/15 opacity-50"
                           : "bg-card border-border hover:border-muted-foreground/30"
@@ -178,13 +281,21 @@ const Index = () => {
                           </span>
                           <Textarea
                             value={item.memo}
-                            onChange={(e) => updateMemo(item.id, e.target.value)}
+                            onChange={(e) => handleMemoChange(item.id, e.target.value)}
                             placeholder="메모 입력..."
                             className="mt-2 min-h-[2.5rem] resize-none bg-muted/50 border-none text-xs placeholder:text-muted-foreground/50 focus-visible:ring-1 focus-visible:ring-primary/40"
                             rows={1}
                           />
                         </div>
-                        {item.checked && <CheckCircle2 className="h-4 w-4 text-primary/60 shrink-0 mt-0.5" />}
+                        <div className="flex items-center gap-1 shrink-0 mt-0.5">
+                          {item.checked && <CheckCircle2 className="h-4 w-4 text-primary/60" />}
+                          <button
+                            onClick={() => deleteMutation.mutate(item.id)}
+                            className="opacity-0 group-hover/card:opacity-100 transition-opacity p-1 rounded-md hover:bg-destructive/20 text-muted-foreground hover:text-destructive"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))}
