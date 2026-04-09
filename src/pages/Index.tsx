@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { CheckCircle2, ChevronDown, ChevronRight, Plus, Trash2, X, LogOut } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
@@ -9,8 +9,62 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/useAuth";
-import { lovable } from "@/integrations/lovable/index";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
+
+const HISTORY_KEY = "ok_check_completion_history";
+
+function saveCompletionRate(percent: number) {
+  const today = new Date().toISOString().slice(0, 10);
+  const stored = JSON.parse(localStorage.getItem(HISTORY_KEY) || "{}");
+  stored[today] = Math.round(percent);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(stored));
+}
+
+function getLast7Days(): { date: string; percent: number }[] {
+  const stored = JSON.parse(localStorage.getItem(HISTORY_KEY) || "{}");
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (6 - i));
+    const key = d.toISOString().slice(0, 10);
+    const label = `${d.getMonth() + 1}/${d.getDate()}`;
+    return { date: label, percent: stored[key] ?? null };
+  });
+}
+
+const CompletionChart = ({ percent }: { percent: number }) => {
+  const [data, setData] = useState(getLast7Days());
+
+  useEffect(() => {
+    saveCompletionRate(percent);
+    setData(getLast7Days());
+  }, [percent]);
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4">
+      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">최근 7일 완료율</p>
+      <ResponsiveContainer width="100%" height={120}>
+        <BarChart data={data} barCategoryGap="30%">
+          <XAxis dataKey="date" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
+          <YAxis domain={[0, 100]} hide />
+          <Tooltip
+            formatter={(v: number) => [`${v}%`, "완료율"]}
+            contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid hsl(var(--border))", background: "hsl(var(--card))", color: "hsl(var(--foreground))" }}
+            cursor={{ fill: "hsl(var(--muted))" }}
+          />
+          <Bar dataKey="percent" radius={[4, 4, 0, 0]}>
+            {data.map((entry, i) => (
+              <Cell
+                key={i}
+                fill={entry.percent === null ? "hsl(var(--muted))" : entry.percent >= 80 ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.5)"}
+              />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+};
 
 type CheckItem = {
   id: string;
@@ -38,16 +92,16 @@ const LoginScreen = () => {
 
   const handleGoogleLogin = async () => {
     setLoading(true);
-    const result = await lovable.auth.signInWithOAuth("google", {
-      redirect_uri: window.location.origin,
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: window.location.origin,
+      },
     });
-    if (result.error) {
+    if (error) {
       toast.error("로그인에 실패했습니다");
       setLoading(false);
-      return;
     }
-    if (result.redirected) return;
-    setLoading(false);
   };
 
   return (
@@ -208,22 +262,22 @@ const ChecklistApp = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="sticky top-0 z-10 border-b border-border bg-background/80 backdrop-blur-md">
+      <header className="sticky top-0 z-10 border-b border-blue-900" style={{ backgroundColor: "#1e40af" }}>
         <div className="mx-auto max-w-2xl px-4 py-4">
           {/* User bar */}
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
               <Avatar className="h-8 w-8">
                 <AvatarImage src={avatarUrl} alt={userName} />
-                <AvatarFallback className="bg-primary/20 text-primary text-xs">
+                <AvatarFallback className="bg-white/20 text-white text-xs">
                   {userName.charAt(0)}
                 </AvatarFallback>
               </Avatar>
-              <span className="text-sm font-medium text-foreground">{userName}</span>
+              <span className="text-sm font-medium text-white">{userName}</span>
             </div>
             <button
               onClick={signOut}
-              className="flex items-center gap-1.5 rounded-lg bg-secondary px-3 py-1.5 text-xs font-medium text-secondary-foreground transition-colors hover:bg-muted"
+              className="flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-white/20"
             >
               <LogOut className="h-3.5 w-3.5" />
               로그아웃
@@ -231,21 +285,26 @@ const ChecklistApp = () => {
           </div>
 
           <div className="flex items-center justify-between">
-            <h1 className="text-xl font-bold text-foreground tracking-tight">
-              <span className="text-primary">OK금융</span> 업무 점검
+            <h1 className="text-xl font-bold text-white tracking-tight">
+              OK금융 업무 점검
             </h1>
-            <button
-              onClick={() => setShowAddForm(!showAddForm)}
-              className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
-            >
-              {showAddForm ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
-              {showAddForm ? "취소" : "항목 추가"}
-            </button>
+            <div className="flex flex-col items-end gap-1.5">
+              <span className="text-xs text-white/70">
+                {new Date().toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric", weekday: "short" })}
+              </span>
+              <button
+                onClick={() => setShowAddForm(!showAddForm)}
+                className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-blue-900 transition-colors hover:bg-blue-50"
+              >
+                {showAddForm ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
+                {showAddForm ? "취소" : "항목 추가"}
+              </button>
+            </div>
           </div>
           <div className="mt-4 flex items-center gap-3">
-            <Progress value={progressPercent} className="h-2 flex-1 bg-muted [&>div]:bg-primary" />
-            <span className="text-sm font-semibold text-muted-foreground whitespace-nowrap">
-              {completedCount}/{totalCount}
+            <Progress value={progressPercent} className="h-2 flex-1 bg-white/20 [&>div]:bg-white" />
+            <span className="text-sm font-semibold text-white/80 whitespace-nowrap">
+              {completedCount}/{totalCount} ({Math.round(progressPercent)}%)
             </span>
           </div>
           <div className="mt-3 flex gap-2">
@@ -255,8 +314,8 @@ const ChecklistApp = () => {
                 onClick={() => setFilter(f)}
                 className={`rounded-full px-3.5 py-1 text-sm font-medium transition-colors ${
                   filter === f
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-secondary text-secondary-foreground hover:bg-muted"
+                    ? "bg-white text-blue-900"
+                    : "bg-white/10 text-white hover:bg-white/20"
                 }`}
               >
                 {f}
@@ -299,6 +358,7 @@ const ChecklistApp = () => {
       )}
 
       <main className="mx-auto max-w-2xl px-4 py-6 space-y-6 pb-20">
+        <CompletionChart percent={progressPercent} />
         {categories.map((cat) => {
           const catFiltered = filtered.filter((item) => item.category === cat);
           if (catFiltered.length === 0 && filter !== "전체") return null;
