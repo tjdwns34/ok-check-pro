@@ -1,9 +1,11 @@
 import { useState } from "react";
-import { CheckCircle2, Filter, ChevronDown, ChevronRight } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, Filter } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { supabase } from "@/integrations/supabase/client";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 type CheckItem = {
   id: string;
@@ -11,35 +13,59 @@ type CheckItem = {
   title: string;
   checked: boolean;
   memo: string;
+  updated_at: string;
 };
-
-const initialItems: CheckItem[] = [
-  { id: "1", category: "월간 점검", title: "고객정보 접근권한 확인", checked: false, memo: "" },
-  { id: "2", category: "월간 점검", title: "비밀번호 변경 여부", checked: false, memo: "" },
-  { id: "3", category: "월간 점검", title: "문서 보관 상태", checked: false, memo: "" },
-  { id: "4", category: "분기 점검", title: "시스템 로그 점검", checked: false, memo: "" },
-  { id: "5", category: "분기 점검", title: "외부감사 자료 준비", checked: false, memo: "" },
-  { id: "6", category: "분기 점검", title: "규정 변경사항 반영", checked: false, memo: "" },
-];
 
 type FilterType = "전체" | "완료" | "미완료";
 
 const Index = () => {
-  const [items, setItems] = useState<CheckItem[]>(initialItems);
   const [filter, setFilter] = useState<FilterType>("전체");
   const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({});
+  const queryClient = useQueryClient();
+
+  const { data: items = [], isLoading } = useQuery({
+    queryKey: ["checklist_items"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("checklist_items")
+        .select("*")
+        .order("category")
+        .order("title");
+      if (error) throw error;
+      return data as CheckItem[];
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async ({ id, updates }: { id: string; updates: Partial<CheckItem> }) => {
+      const { error } = await supabase.from("checklist_items").update(updates).eq("id", id);
+      if (error) throw error;
+    },
+    onMutate: async ({ id, updates }) => {
+      await queryClient.cancelQueries({ queryKey: ["checklist_items"] });
+      const previous = queryClient.getQueryData<CheckItem[]>(["checklist_items"]);
+      queryClient.setQueryData<CheckItem[]>(["checklist_items"], (old) =>
+        old?.map((item) => (item.id === id ? { ...item, ...updates } : item))
+      );
+      return { previous };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) queryClient.setQueryData(["checklist_items"], context.previous);
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["checklist_items"] }),
+  });
+
+  const toggleCheck = (id: string, currentChecked: boolean) => {
+    updateMutation.mutate({ id, updates: { checked: !currentChecked } });
+  };
+
+  const updateMemo = (id: string, memo: string) => {
+    updateMutation.mutate({ id, updates: { memo } });
+  };
 
   const completedCount = items.filter((i) => i.checked).length;
   const totalCount = items.length;
   const progressPercent = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
-
-  const toggleCheck = (id: string) => {
-    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, checked: !item.checked } : item)));
-  };
-
-  const updateMemo = (id: string, memo: string) => {
-    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, memo } : item)));
-  };
 
   const filtered = items.filter((item) => {
     if (filter === "완료") return item.checked;
@@ -50,8 +76,7 @@ const Index = () => {
   const categories = [...new Set(items.map((i) => i.category))];
   const filters: FilterType[] = ["전체", "완료", "미완료"];
 
-  const isCategoryOpen = (cat: string) => openCategories[cat] !== false; // default open
-
+  const isCategoryOpen = (cat: string) => openCategories[cat] !== false;
   const toggleCategory = (cat: string) => {
     setOpenCategories((prev) => ({ ...prev, [cat]: !isCategoryOpen(cat) }));
   };
@@ -61,6 +86,14 @@ const Index = () => {
     const done = catItems.filter((i) => i.checked).length;
     return { done, total: catItems.length, percent: catItems.length > 0 ? (done / catItems.length) * 100 : 0 };
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <div className="text-muted-foreground text-sm">로딩 중...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -105,9 +138,9 @@ const Index = () => {
               <CollapsibleTrigger className="w-full">
                 <div className="flex items-center gap-3 mb-3 group cursor-pointer">
                   {open ? (
-                    <ChevronDown className="h-4 w-4 text-primary transition-transform" />
+                    <ChevronDown className="h-4 w-4 text-primary" />
                   ) : (
-                    <ChevronRight className="h-4 w-4 text-primary transition-transform" />
+                    <ChevronRight className="h-4 w-4 text-primary" />
                   )}
                   <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">{cat}</h2>
                   <div className="flex-1 flex items-center gap-2 ml-1">
@@ -132,7 +165,7 @@ const Index = () => {
                       <div className="flex items-start gap-3">
                         <Checkbox
                           checked={item.checked}
-                          onCheckedChange={() => toggleCheck(item.id)}
+                          onCheckedChange={() => toggleCheck(item.id, item.checked)}
                           className="mt-0.5 h-5 w-5 rounded-md border-muted-foreground/40 data-[state=checked]:bg-primary data-[state=checked]:border-primary"
                         />
                         <div className="flex-1 min-w-0">
